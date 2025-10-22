@@ -372,7 +372,7 @@ win.regions <- win.regions |>
 
 # HETEROZYGOSITY ----------------------------------------------------------
 
-# heterozygosity (from PLINK or vcftools output)
+# heterozygosity (from PLINK or vcftools output from terminal)
 het_tbl <- read.table("chr12_het.txt", header=FALSE)
 het_tbl <- het_tbl |> 
   rename(ind = V1, 
@@ -396,6 +396,113 @@ ggplot(data = het_tbl,
   theme_minimal(base_family = "Avenir Next") +
   theme(text = element_text(size = 20))
 
+
+# ENVIRONMENTAL ASSOCIATION -----------------------------------------------
+
+# load packages
+pacman::p_load(lfmm, tidyverse, ggplot2, stringr, corrplot,
+               Hmisc, PerformanceAnalytics, car, factoextra,
+               geodata, terra, ggnewscale, ggpubr, prism, sf)
+setwd("/Users/heidiyang/inversions/lostruct_outlier_bcfs")
+
+# load data
+clust_df <- read.csv("chr12_outlier_cluster_df", header = TRUE)
+bioclim_df <- read.csv("bioclim_inversions_data.csv", header = TRUE)
+comb_df <- left_join(clust_df, bioclim_df, by = join_by(ind_ID == sample_ID))
+
+cors_df <- comb_df[, -c(seq(1:10))] |> 
+  dplyr::select(-geometry)
+
+# Create empty data frame to store results
+anova_results <- data.frame(
+  variable = character(),
+  p_value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop through each variable in cors_df
+for (i in 1:ncol(cors_df)) {
+  var_name <- names(cors_df)[i]
+  var_data <- cors_df[,i]
+  
+  # Run ANOVA
+  anova_model <- aov(get(var_name) ~ cluster, data = comb_df)
+  p_val <- summary(anova_model)[[1]][["Pr(>F)"]][1]
+  
+  # Store results
+  anova_results <- rbind(anova_results, 
+                         data.frame(variable = var_name, 
+                                    p_value = p_val))
+  
+
+  # Create temporary data frame for plotting
+  plot_data <- data.frame(
+      variable_value = var_data,
+      cluster = comb_df$cluster
+    )
+    
+  # Create boxplot
+  p <- ggplot(plot_data, aes(y = variable_value, x = as.factor(cluster))) +
+    geom_boxplot() +
+    labs(title = paste("Boxplot for", var_name),
+          subtitle = paste("ANOVA p-value =", round(p_val, 4)),
+          y = var_name,
+          x = "Cluster") +
+    theme_minimal()
+    
+    print(p)
+}
+
+anova_results <- anova_results |> 
+  arrange(p_value)
+
+# PCA of climate variables 
+pca_result <- prcomp(cors_df, scale. = TRUE, center = TRUE)
+fviz_eig(pca_result, addlabels = TRUE, ylim = c(0, 50))
+fviz_pca_var(pca_result, col.var = "contrib",
+             gradient.cols = c("#00AFBB", "goldenrod1", "#FC4E07"))
+pc_scores <- pca_result$x[, 1:4]
+
+pca_data <- data.frame(
+  PC1 = pc_scores[, 1],
+  PC2 = pc_scores[, 2],
+  PC3 = pc_scores[, 3],
+  PC4 = pc_scores[, 4],
+  cluster = comb_df$cluster
+)
+
+# ANOVA
+oneway.test(PC2~cluster, data = pca_data) # chr12 for PC2
+
+# graph
+ggplot(pca_data, aes(y = PC2, 
+                     x = as.factor(cluster), 
+                     fill = as.factor(cluster))) +
+  geom_boxplot(draw_quantiles = TRUE) +
+  scale_fill_manual(values = RColorBrewer::brewer.pal(3, "Dark2")) + 
+  guides(fill = "none") +
+  #geom_boxplot(width=0.1, fill = "white") +
+  stat_compare_means(comparisons = list(c("1", "2"), c("1", "3"), c("2", "3")),
+                     method = "t.test",
+                     label = "p.signif") +  # uses asterisks instead of p-values
+  xlab("cluster") + ylab("Climate PC2 (19.5% of variance)") +
+  theme_minimal(base_family = "Avenir Next") +
+  theme(text = element_text(size = 20))
+
+# look at loadings - check which variables
+pc2_loadings <- pca_result$rotation[, 2]
+print(pc2_loadings)
+
+pc2_sorted <- sort(abs(pc2_loadings), decreasing = TRUE)
+print(pc2_sorted)
+
+# climate PCA
+ggplot(pca_data,
+       aes(x = PC1,
+           y = PC2)) +
+  geom_point(aes(color = as.factor(cluster))) +
+  scale_color_okabe_ito() +
+  theme_minimal()
 
 
 
