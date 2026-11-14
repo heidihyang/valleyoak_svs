@@ -1,0 +1,51 @@
+# load libraries
+library(lostruct)
+library(data.table)
+library(tidyverse)
+
+# set parameters
+window_size <- 100 # todesco et al. used 100 SNP windows
+k_kept <- 40 # Number of MDS kept
+min_windows <- 4 # Minimum number of windows to call outlier regions
+max_distance_between_outliers <- 10 # Max distance between outlier windows
+n_permutations <- 1000 # Number of permutation for chromosomal clustering test
+min_cor <- 0.8 # Correlation threshold for collapsing MDS
+
+# get file name
+args <- commandArgs(trailingOnly = TRUE)
+bcf.file <- args[1]
+
+# lostruct
+sites <- vcf_positions(bcf.file)
+win.fn.snp <- vcf_windower(bcf.file, size=window_size, type="snp", sites=sites) # partitioning VCF by window size
+snp.pca <- eigen_windows(win.fn.snp, k=2, mc.cores=4) # Local PCA
+
+# Distance matrix for MDS (NA removed)
+pcdist <- pc_dist(snp.pca, mc.cores=4) 
+na.wins <- is.na(snp.pca[,1])
+pcdist <- pcdist[!na.wins, !na.wins]
+nan.wins <- pcdist[,1]=="NaN"
+pcdist <- pcdist[!nan.wins, !nan.wins]
+
+# MDS of removed NA distance matrix
+mds <- cmdscale(pcdist, eig=TRUE, k=k_kept)
+mds.coords <- mds$points
+colnames(mds.coords) <- paste("MDS coordinate", 1:ncol(mds.coords))
+
+# get start and end positions for each window
+win.regions <- region(win.fn.snp)()
+win.regions <- win.regions[!na.wins,][!nan.wins,]
+win.regions |> mutate(mid=(start+end)/2) -> win.regions
+for (k in 1:k_kept){
+  name = paste("mds", str_pad(k, 2, pad = "0"), sep="")
+  win.regions$tmp <- "NA"
+  win.regions <- win.regions |> rename(!!name := tmp)
+}
+for (i in 1:k_kept){
+  j = i + 4
+  win.regions[,j] <- mds.coords[,i] # adding corresponding mds values
+}
+win.regions$n <- 1:nrow(win.regions)
+
+# save file as RDS
+saveRDS(win.regions, file= paste0(bcf.file, "lostruct.win100.windows.rds"))
