@@ -25,10 +25,12 @@ min_windows <- 4 # Minimum number of windows to call outlier regions
 max_distance_between_outliers <- 10 # Max distance between outlier windows
 n_permutations <- 1000 # Number of permutation for chromosomal clustering test
 min_cor <- 0.8 # Correlation threshold for collapsing MDS
+z_thresh <- 2 # threshold for defining MDS outlier windows
 
 # get file name
 args <- commandArgs(trailingOnly = TRUE) #if using it from terminal
 bcf.file <- args[1]
+# bcf.file <- "path/to/file"
 
 # lostruct
 sites <- vcf_positions(bcf.file)
@@ -140,7 +142,7 @@ for (chr in 1:length(RDS_files)) {
   # identify outliers and outlier regions for each MDS axis 
   for (i in 1:nrow(mds_outlier_tibble)) {
     mds_chosen <- mds_outlier_tibble[i, 1] |> pull()
-    # identify outlier regions for MDS axis (zscore > 2)
+    # identify outlier regions for MDS axis (zscore > z_thresh) # change Z-score threshold above
     sd_mds <- win.regions |> 
       dplyr::summarize(sd_mds = sd(.data[[mds_chosen]])) |> 
       pull(sd_mds)
@@ -150,7 +152,7 @@ for (chr in 1:length(RDS_files)) {
     zscore_mds <- win.regions |> 
       mutate(zscore = (.data[[mds_chosen]] - mean_mds) / sd_mds) 
     zscore_outlier_mds <- zscore_mds |> 
-      filter(abs(zscore) > 2) |> 
+      filter(abs(zscore) > z_thresh) |> 
       arrange(start)
     
     # graph MDS coordinate and genomic position 
@@ -158,10 +160,10 @@ for (chr in 1:length(RDS_files)) {
     # p <- ggplot(data = zscore_mds, 
     #        aes(x = mid / 1000000, 
     #            y = .data[[mds_chosen]],
-    #            color = abs(zscore) > 2)) +
+    #            color = abs(zscore) > z_thresh)) +
     #   geom_point(alpha = 0.5) +
     #   scale_color_manual(values = c("gray", okabe_ito_12[chr]),
-    #                      labels = c("≤ 2", "> 2"),
+    #                      labels = c("≤ 2", "> 2"), # change zscore threshold here
     #                      name = "|Z-score|") +
     #   labs(x = "Genomic position (Mb)", 
     #        y = mds_chosen,
@@ -206,10 +208,10 @@ for (chr in 1:length(RDS_files)) {
 pacman::p_load(SNPRelate, gdsfmt, SeqArray, ggokabeito)
 
 #setwd
-setwd("/Users/heidiyang/inversions/lostruct_outlier_bcfs/")
+setwd("/Users/heidiyang/inversions/lostruct_outlier_bcfs/") # need to make BCFs of each outlier region
 
 # load and format data - do this only once since the file has already been made
-bcf.fn <- "chr12_lostruct_outlier_pt2.bcf"
+bcf.fn <- "chr12_lostruct_outlier_pt2.bcf" # change for respective region
 # format header
 h <- seqVCF_Header(bcf.fn)
 # there's some funky issues with the header format but this works
@@ -259,7 +261,7 @@ pca_df <- data.frame(
   PC2 = pca$eigenvect[,2],    # the second eigenvector
   stringsAsFactors = FALSE)
 
-# fix those yucky IDs
+# fix IDs
 split_names <- sapply(pca_df$ind_ID, function (x) str_split(x, "[.]"))
 pca_df$ind_ID <-t(as.data.frame(lapply(split_names, function (x) paste(x[2:3], collapse="."))))
 
@@ -346,14 +348,13 @@ win.regions <- win.regions |>
 
 # HETEROZYGOSITY ----------------------------------------------------------
 
-# heterozygosity (from PLINK or vcftools output from terminal)
-het_tbl <- read.table("chr12_het.txt", header=FALSE)
+# heterozygosity (from PLINK or vcftools output from terminal) - opted to just use variants here
+het_tbl <- read.table("chr12_het.txt", header=FALSE) # replace with correct heterozygosity file
 het_tbl <- het_tbl |> 
   rename(ind = V1, 
          o_hom_count = V2, 
          total = V3, 
          het_prop = V4) |> 
-  filter(ind != "Qlob.CD16.2.00F" & ind != "Qlob.SW.35.00F") |> 
   mutate(ind_ID = t(as.data.frame(lapply(split_names, function (x) paste(x[2:3], collapse=".")))),
          cluster = pca_df$cluster) |> 
   dplyr::select(-ind)
@@ -371,264 +372,5 @@ ggplot(data = het_tbl,
   theme(text = element_text(size = 20))
 
 
-# ENVIRONMENTAL ASSOCIATION -----------------------------------------------
-
-# load packages
-pacman::p_load(lfmm, tidyverse, ggplot2, stringr, corrplot,
-               Hmisc, PerformanceAnalytics, car, factoextra,
-               geodata, terra, ggnewscale, ggpubr, prism, sf)
-setwd("/Users/heidiyang/inversions/lostruct_outlier_bcfs")
-
-# load data
-clust_df <- read.csv("chr12_outlier_cluster_df", header = TRUE)
-bioclim_df <- read.csv("bioclim_inversions_data.csv", header = TRUE)
-comb_df <- left_join(clust_df, bioclim_df, by = join_by(ind_ID == sample_ID))
-
-cors_df <- comb_df[, -c(seq(1:10))] |> 
-  dplyr::select(-geometry)
-
-# Create empty data frame to store results
-anova_results <- data.frame(
-  variable = character(),
-  p_value = numeric(),
-  stringsAsFactors = FALSE
-)
-
-# Loop through each variable in cors_df
-for (i in 1:ncol(cors_df)) {
-  var_name <- names(cors_df)[i]
-  var_data <- cors_df[,i]
-  
-  # Run ANOVA
-  anova_model <- aov(get(var_name) ~ cluster, data = comb_df)
-  p_val <- summary(anova_model)[[1]][["Pr(>F)"]][1]
-  
-  # Store results
-  anova_results <- rbind(anova_results, 
-                         data.frame(variable = var_name, 
-                                    p_value = p_val))
-  
-
-  # Create temporary data frame for plotting
-  plot_data <- data.frame(
-      variable_value = var_data,
-      cluster = comb_df$cluster
-    )
-    
-  # Create boxplot
-  p <- ggplot(plot_data, aes(y = variable_value, x = as.factor(cluster))) +
-    geom_boxplot() +
-    labs(title = paste("Boxplot for", var_name),
-          subtitle = paste("ANOVA p-value =", round(p_val, 4)),
-          y = var_name,
-          x = "Cluster") +
-    theme_minimal()
-    
-    print(p)
-}
-
-anova_results <- anova_results |> 
-  arrange(p_value)
-
-# PCA of climate variables 
-pca_result <- prcomp(cors_df, scale. = TRUE, center = TRUE)
-fviz_eig(pca_result, addlabels = TRUE, ylim = c(0, 50))
-fviz_pca_var(pca_result, col.var = "contrib",
-             gradient.cols = c("#00AFBB", "goldenrod1", "#FC4E07"))
-pc_scores <- pca_result$x[, 1:4]
-
-pca_data <- data.frame(
-  PC1 = pc_scores[, 1],
-  PC2 = pc_scores[, 2],
-  PC3 = pc_scores[, 3],
-  PC4 = pc_scores[, 4],
-  cluster = comb_df$cluster
-)
-
-# ANOVA
-oneway.test(PC2~cluster, data = pca_data) # chr12 for PC2
-
-# graph
-ggplot(pca_data, aes(y = PC2, 
-                     x = as.factor(cluster), 
-                     fill = as.factor(cluster))) +
-  geom_boxplot(draw_quantiles = TRUE) +
-  scale_fill_manual(values = RColorBrewer::brewer.pal(3, "Dark2")) + 
-  guides(fill = "none") +
-  #geom_boxplot(width=0.1, fill = "white") +
-  stat_compare_means(comparisons = list(c("1", "2"), c("1", "3"), c("2", "3")),
-                     method = "t.test",
-                     label = "p.signif") +  # uses asterisks instead of p-values
-  xlab("cluster") + ylab("Climate PC2 (19.5% of variance)") +
-  theme_minimal(base_family = "Avenir Next") +
-  theme(text = element_text(size = 20))
-
-# look at loadings - check which variables
-pc2_loadings <- pca_result$rotation[, 2]
-print(pc2_loadings)
-
-pc2_sorted <- sort(abs(pc2_loadings), decreasing = TRUE)
-print(pc2_sorted)
-
-# climate PCA
-ggplot(pca_data,
-       aes(x = PC1,
-           y = PC2)) +
-  geom_point(aes(color = as.factor(cluster))) +
-  scale_color_okabe_ito() +
-  theme_minimal()
-
-
-
-# SCRATCH CODE ------------------------------------------------------------
-
-
-# if you just want to check a single MDS - essentially the same code as in the for loop above
-mds_chosen <- "mds04" # write the desired mds axis
-sd_mds <- win.regions |> 
-  dplyr::summarize(sd_mds = sd(.data[[mds_chosen]])) |> 
-  pull(sd_mds)
-mean_mds <- win.regions |> 
-  dplyr::summarize(mean_mds = mean(.data[[mds_chosen]])) |> 
-  pull(mean_mds)
-zscore_mds <- win.regions |> # outliers have zscores > 1.5
-  mutate(zscore = (.data[[mds_chosen]] - mean_mds) / sd_mds) |> 
-  filter(abs(zscore) > 1.5) |> arrange(start)
-neg_outliers <- zscore_mds |> 
-  dplyr::select(chrom, start, end, mid, mds01, n, zscore, cluster) |> 
-  filter(zscore < 0)
-pos_outliers <- zscore_mds |> 
-  dplyr::select(chrom, start, end, mid, mds01, n, zscore, cluster) |> 
-  filter(zscore > 0)
-
-# group by cluster
-if (length(neg_outliers) > 0) {
-  plot(neg_outliers$n, col=neg_outliers$cluster)
-  plot(neg_outliers$mid, neg_outliers$zscore, col=neg_outliers$cluster)
-  neg_outliers |> 
-    group_by(cluster) |> 
-    summarize(n = n()) 
-}
-
-clust_1 <- neg_outliers |> 
-  select(cluster == 1) 
-
-if (length(pos_outliers) > 0) {
-  plot(pos_outliers$n, col=pos_outliers$cluster)
-  plot(pos_outliers$mid, pos_outliers$zscore, col=pos_outliers$cluster)
-  pos_outliers |> 
-    group_by(cluster) |> 
-    summarize(n=n())
-}
-
-# manually inspect the outlier DFs - take the first window position start 
-# and end position of the last window
-
-# chr 1: ends at 8185, then goes to 8272 - index # 628
-# chr1:45286549-48090915
-
-# chr 2:
-# window number regions:7882-8167
-# chr2:47787995-49014048
-
-# chr 3:
-# positive outliers
-# window numbers: 4786-5027
-# chr3:46959541-47980788
-# other option: 5037-5095
-# chr3:47991405-48225119
-# altogether now: chr3:46959541-48225119
-# negative outliers
-# chr3:44995219-45302950
-
-# chr4:56649791-59154308
-chr4_outlier_length <- 59.154308 - 56.649791
-# LD:56649000-59154000
-# LD for graphing:50000000-65000000 
-
-# chr5:52804869-53003411
-# chr5:57131380-60969051
-
-# chr6:29793595-30541449
-# chr6:29.793595-30.248828
-chr6_outlier_length <- 30.248828 - 29.793595
-# for LD:29000000-31000000
-
-# chr7:26414905-37730411
-# chr7:38327482-39251068
-
-# chr8:23888482-25636212
-
-# chr9:33.232891-33.711931
-chr9_outlier_length <- 33.711931 - 33.232891
-# LD: 30000000-36000000
-
-
-# chr10:35277492-37786975 # this is one, there's a big jump in basepairs
-
-# chr11:30357747-31858058
-
-# chr12:20929525-21008573
-
-# chr12:18675632-20019679 - this is the one! (and it's actually negative on the MDS axis)
-chr12_outlier_length <-20.019679 - 18.675632
-
-
-## kmeans clustering to determine regions ##
-# first let's get the fit2d tibble to just have the 2 MDS coordinates
-kmeans_mds <- win.regions |> 
-  dplyr::select(mds01, mds02)
-
-# set le seed
-#set.seed(123)
-
-# function to get silhouette score for each k from 2-10
-silhouette_score <- function(k) {
-  km <- kmeans(kmeans_mds, centers = k, nstart=25) # performs kmeans clustering
-  ss <- silhouette(km$cluster, dist(kmeans_mds)) # calculates silhouette score
-  mean(ss[, 3]) # calculates average across iterations
-}
-
-# get avg silhouette score for each k - need this for silhouette score
-k <- 2:10
-avg_sil <- tibble(`k` = k,
-                  `ss` = sapply(k, silhouette_score))
-
-# plot the silhouette scores to find optimal k
-ggplot(avg_sil,
-       aes(k, ss)) +
-  geom_line() +
-  geom_point() +
-  labs(
-    x = '# clusters (k)',
-    y = 'Average silhouette score',
-    title = "Silhouette scores for k = 2 through k = 10"
-  ) +
-  theme_minimal()
-
-# now that we know optimal k, we run kmeans again on the data with k = 2
-km_final <- kmeans(kmeans_mds, 3)
-# chr1: 8, chr2: 3, chr3: 3, chr4: 3, chr5: 2, chr6: 2, chr7: 3
-
-# total within cluster sum of square
-km_final$tot.withinss 
-
-# cluster sizes
-km_final$size 
-
-# let's include the cluster number back to our initial dataset
-win.regions$cluster <- as.factor(km_final$cluster)
-
-# plot
-ggplot(data = win.regions, 
-       aes(x = mds01, 
-           y = mds02, 
-           color = cluster)) +
-  geom_point(show.legend = FALSE) +
-  scale_color_okabe_ito() +
-  labs(x = "MDS Coordinate 1", 
-       y = "MDS Coordinate 2",
-       title = "MDS 2D plot of chromosome 7") +
-  theme_minimal()
 
 
